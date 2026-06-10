@@ -35,6 +35,9 @@ export function readConfig() {
     loadEnv(path.resolve(workerRoot, '.env.local'));
   }
   const args = new Set(process.argv.slice(2));
+  const cliAuthMode = args.has('--direct')
+    ? 'direct'
+    : (argValue(process.argv.slice(2), '--auth-mode') || argValue(process.argv.slice(2), '--siks-auth-mode') || null);
   const cliLogLevel = args.has('--verbose') ? 'verbose' : (args.has('--clean') ? 'clean' : null);
   const requestedLogLevel = String(cliLogLevel || process.env.LOG_LEVEL || 'clean').toLowerCase();
   const legacyPollIntervalMs = numberEnv('POLL_INTERVAL_MS', 10000);
@@ -90,7 +93,7 @@ export function readConfig() {
     keepBrowserOpen: boolEnv('KEEP_BROWSER_OPEN', true),
     leaveBrowserOpenOnExit: boolEnv('LEAVE_BROWSER_OPEN_ON_EXIT', false),
     siksUserDataDir: process.env.SIKS_USER_DATA_DIR || './session-data',
-    siksAuthMode: process.env.SIKS_AUTH_MODE || 'puppeteer',
+    siksAuthMode: cliAuthMode || process.env.SIKS_AUTH_MODE || 'puppeteer',
     siksAuthApiBaseUrl: trimSlash(process.env.SIKS_AUTH_API_BASE_URL || 'https://api.kemensos.go.id'),
     siksAuthLoginEndpoint: process.env.SIKS_AUTH_LOGIN_ENDPOINT || '/siks/auth/v1/login',
     siksAuthCaptchaEndpoint: process.env.SIKS_AUTH_CAPTCHA_ENDPOINT || '/siks/auth/v1/get-captcha',
@@ -207,6 +210,20 @@ function boolEnv(key, fallback) {
     return fallback;
   }
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+}
+
+function argValue(args, name) {
+  const prefix = `${name}=`;
+  for (let i = 0; i < args.length; i += 1) {
+    const value = String(args[i] || '');
+    if (value.startsWith(prefix)) {
+      return value.slice(prefix.length).trim();
+    }
+    if (value === name && args[i + 1]) {
+      return String(args[i + 1]).trim();
+    }
+  }
+  return '';
 }
 
 function listEnv(key) {
