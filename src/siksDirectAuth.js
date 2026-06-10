@@ -17,7 +17,7 @@ export class SiksDirectAuthClient {
   constructor(config = {}, options = {}) {
     this.config = config;
     this.baseUrl = trimSlash(options.baseUrl || config.siksAuthApiBaseUrl || DEFAULT_AUTH_BASE);
-    this.timeoutMs = Math.max(1000, Number(options.timeoutMs || config.siksActionTimeoutMs || 15000));
+    this.timeoutMs = Math.max(1000, Number(options.timeoutMs || config.siksAuthTimeoutMs || config.siksActionTimeoutMs || 30000));
     this.usernameField = options.usernameField || config.siksHttpLoginUsernameField || 'email';
     this.appKey = options.appKey || config.siksAuthAppKey || config.dtsenAppKey || DEFAULT_AUTH_APP_KEY;
     this.jobDir = options.jobDir || '';
@@ -39,14 +39,35 @@ export class SiksDirectAuthClient {
     }
 
     const maxCaptchaAttempts = Math.max(1, Number(this.config.siksCaptchaAttempts || 1));
+    this.debug('mulai login SIKS direct', {
+      reason,
+      baseUrl: this.baseUrl,
+      timeout_ms: this.timeoutMs,
+      captcha_attempts: maxCaptchaAttempts,
+      otp_attempts: Number(this.config.siksOtpSubmitAttempts || 1),
+    });
     let lastError = null;
+    let attemptsUsed = 0;
     for (let attempt = 1; attempt <= maxCaptchaAttempts; attempt += 1) {
+      attemptsUsed = attempt;
       try {
+        this.debug('mulai percobaan captcha/login', { attempt, max_attempts: maxCaptchaAttempts });
         const loginStartedAt = new Date();
         const captchaResponse = await this.getCaptcha();
         const captchaData = unwrapAuthData(captchaResponse);
+        this.debug('captcha diterima dari SIKS', {
+          attempt,
+          has_key: Boolean(captchaKey(captchaData)),
+          image_found: Boolean(findCaptchaImage(captchaData)),
+        });
         const captcha = await this.solveCaptcha(captchaData, attempt);
         const payload = this.loginPayload({ username, password, captcha, captchaData });
+        this.debug('mengirim login direct', {
+          attempt,
+          username_field: this.usernameField,
+          captcha,
+          captcha_key: payload.key || '',
+        }, { sensitive: true });
         const login = await this.requestAuth('POST', this.endpoints.login, {
           body: this.toEncryptedFormData(payload),
           requestFields: payload,
@@ -54,12 +75,25 @@ export class SiksDirectAuthClient {
         });
         const loginData = unwrapAuthData(login);
         const authorization = extractAuthorization(loginData);
+        this.debug('respons login direct diterima', {
+          attempt,
+          otp_required: isOtpRequired(loginData),
+          has_authorization: Boolean(authorization),
+          code: loginData?.code || '',
+          auth_type: loginData?.jenis_autentikasi || loginData?.auth_type || '',
+          message: authMessage(login, loginData),
+        });
         if (authorization) {
           return await this.finishLogin({ authorization, loginData, reason, method: 'direct-login' });
         }
 
         if (isOtpRequired(loginData)) {
           const otpStageToken = extractOtpStageToken(loginData);
+          this.debug('SIKS meminta OTP', {
+            attempt,
+            auth_type: loginData?.jenis_autentikasi || loginData?.auth_type || '',
+            has_otp_stage_token: Boolean(otpStageToken),
+          });
           const otpAuthorization = await this.completeOtp({
             username,
             loginStartedAt,
@@ -73,15 +107,29 @@ export class SiksDirectAuthClient {
         if (!isCaptchaOrLoginRetryable(message) || attempt >= maxCaptchaAttempts) {
           throw lastError;
         }
+        this.debug('captcha/login ditolak, akan coba captcha baru', {
+          attempt,
+          next_attempt: attempt + 1,
+          message,
+        });
       } catch (error) {
         lastError = error;
-        if (!isCaptchaOrLoginRetryable(error.message) || attempt >= maxCaptchaAttempts) {
-          break;
+        this.debug('percobaan captcha/login gagal', {
+          attempt,
+          stage: error.stage || 'captcha-login',
+          message: error.message,
+          retryable: isCaptchaOrLoginRetryable(error.message) || isTransientAuthError(error),
+        });
+        if (error.stage === 'otp') {
+          throw new Error(`Login SIKS direct gagal pada tahap OTP setelah captcha/login berhasil. ${error.message}`.trim());
+        }
+        if (!(isCaptchaOrLoginRetryable(error.message) || isTransientAuthError(error)) || attempt >= maxCaptchaAttempts) {
+          throw new Error(`Login SIKS direct gagal pada percobaan captcha/login ${attemptsUsed}/${maxCaptchaAttempts}. ${error.message}`.trim());
         }
       }
     }
 
-    throw new Error(`Login SIKS direct gagal setelah ${maxCaptchaAttempts} percobaan captcha. ${lastError?.message || ''}`.trim());
+    throw new Error(`Login SIKS direct gagal setelah ${attemptsUsed || maxCaptchaAttempts}/${maxCaptchaAttempts} percobaan captcha/login. ${lastError?.message || ''}`.trim());
   }
 
   async finishLogin({ authorization, loginData, reason, method }) {
@@ -94,6 +142,12 @@ export class SiksDirectAuthClient {
       login: loginData,
       profile,
       authorization,
+    });
+    this.debug('login SIKS direct berhasil', {
+      method,
+      reason,
+      profile_ok: !profile?.warning,
+      profile_warning: profile?.warning || '',
     });
     return {
       authorization,
@@ -111,13 +165,21 @@ export class SiksDirectAuthClient {
 
     const attemptedOtps = new Set();
     const maxAttempts = Math.max(1, Number(this.config.siksOtpSubmitAttempts || 1));
+    this.debug('mulai tahap OTP direct', { max_attempts: maxAttempts });
     let lastError = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const otp = await this.readOtp({ since: loginStartedAt, excludedOtps: attemptedOtps });
       if (!otp) {
-        throw new Error(`OTP baru tidak ditemukan dari Telegram setelah ${attemptedOtps.size} kode sebelumnya ditolak.`);
+        const error = new Error(`OTP baru tidak ditemukan dari Telegram setelah ${attemptedOtps.size} kode sebelumnya ditolak.`);
+        error.stage = 'otp';
+        throw error;
       }
       attemptedOtps.add(otp);
+      this.debug('OTP direct terbaca', {
+        attempt,
+        otp,
+        attempted_count: attemptedOtps.size,
+      }, { sensitive: true });
 
       try {
         const payload = {
@@ -134,6 +196,11 @@ export class SiksDirectAuthClient {
         });
         const data = unwrapAuthData(response);
         const authorization = extractAuthorization(data);
+        this.debug('respons matching OTP diterima', {
+          attempt,
+          has_authorization: Boolean(authorization),
+          message: authMessage(response, data),
+        });
         if (authorization) {
           return authorization;
         }
@@ -143,7 +210,12 @@ export class SiksDirectAuthClient {
         }
       } catch (error) {
         lastError = error;
-        if (!isOtpRetryable(error.message) || attempt >= maxAttempts) {
+        this.debug('matching OTP gagal', {
+          attempt,
+          message: error.message,
+          retryable: isOtpRetryable(error.message) || isTransientAuthError(error),
+        });
+        if (!(isOtpRetryable(error.message) || isTransientAuthError(error)) || attempt >= maxAttempts) {
           break;
         }
       }
@@ -151,16 +223,28 @@ export class SiksDirectAuthClient {
       await sleep(Math.max(250, Number(this.config.siksOtpRetryDelayMs || 1000)));
     }
 
-    throw new Error(`Login SIKS direct gagal setelah ${maxAttempts} percobaan OTP. ${lastError?.message || ''}`.trim());
+    const error = new Error(`Login SIKS direct gagal setelah ${maxAttempts} percobaan OTP. ${lastError?.message || ''}`.trim());
+    error.stage = 'otp';
+    throw error;
   }
 
   async readOtp({ since, excludedOtps = new Set() } = {}) {
     const manualOtp = String(this.config.siksDirectOtp || process.env.SIKS_HTTP_LOGIN_OTP || process.env.SIKS_OTP || '').trim();
     if (manualOtp && !excludedOtps.has(manualOtp)) {
+      this.debug('OTP direct memakai override manual dari env', { otp: manualOtp }, { sensitive: true });
       return manualOtp;
     }
 
-    return await readOtpFromTelegram({ since, excludedOtps });
+    this.debug('membaca OTP dari Telegram API', {
+      since: since?.toISOString?.() || String(since || ''),
+      excluded_count: excludedOtps.size || 0,
+    });
+    const otp = await readOtpFromTelegram({ since, excludedOtps });
+    this.debug('hasil baca OTP Telegram API', {
+      found: Boolean(otp),
+      otp: otp || '',
+    }, { sensitive: true });
+    return otp;
   }
 
   async getCaptcha() {
@@ -175,13 +259,21 @@ export class SiksDirectAuthClient {
     await fs.ensureDir(this.logDir);
     const imagePath = path.join(this.logDir, `captcha-${attempt}.${extension || 'png'}`);
     await fs.writeFile(imagePath, buffer);
+    this.debug('gambar captcha disimpan', {
+      attempt,
+      image_path: imagePath,
+      bytes: buffer.length,
+      extension: extension || 'png',
+    });
     if (manualCaptcha) {
       await this.writeJsonLog(`captcha-solve-${attempt}`, {
         mode: 'manual',
         imagePath,
         captcha: manualCaptcha,
       });
-      return manualCaptcha.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const captcha = manualCaptcha.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      this.debug('captcha direct memakai override manual dari env', { attempt, captcha }, { sensitive: true });
+      return captcha;
     }
 
     const captcha = await getCaptchaTextFromGemini(imagePath, this.config);
@@ -190,6 +282,7 @@ export class SiksDirectAuthClient {
       imagePath,
       captcha,
     });
+    this.debug('captcha direct hasil Gemini', { attempt, captcha, image_path: imagePath }, { sensitive: true });
     return captcha;
   }
 
@@ -262,6 +355,14 @@ export class SiksDirectAuthClient {
 
   async requestAuth(method, endpoint, { token = '', body = null, requestFields = null, logName = '' } = {}) {
     const url = endpointUrl(this.baseUrl, endpoint);
+    const startedAt = Date.now();
+    this.debug('request SIKS auth API', {
+      name: logName || endpoint,
+      method,
+      url,
+      timeout_ms: this.timeoutMs,
+      has_token: Boolean(token),
+    });
     if (logName) {
       await this.writeJsonLog(`${logName}-request`, {
         method,
@@ -271,17 +372,29 @@ export class SiksDirectAuthClient {
       });
     }
 
-    const response = await fetchWithTimeout(url, {
-      method,
-      headers: {
-        ...this.browserLikeHeaders(),
-        ...(token ? { authorization: token } : {}),
-      },
-      body,
-    }, {
-      timeoutMs: this.timeoutMs,
-      timeoutMessage: `SIKS auth API timeout setelah ${Math.round(this.timeoutMs / 1000)} detik.`,
-    });
+    let response = null;
+    try {
+      response = await fetchWithTimeout(url, {
+        method,
+        headers: {
+          ...this.browserLikeHeaders(),
+          ...(token ? { authorization: token } : {}),
+        },
+        body,
+      }, {
+        timeoutMs: this.timeoutMs,
+        timeoutMessage: `SIKS auth API timeout setelah ${Math.round(this.timeoutMs / 1000)} detik.`,
+      });
+    } catch (error) {
+      this.debug('request SIKS auth API gagal sebelum respons', {
+        name: logName || endpoint,
+        method,
+        url,
+        elapsed_ms: Date.now() - startedAt,
+        message: error.message,
+      });
+      throw error;
+    }
 
     const text = await response.text().catch(() => '');
     const parsed = parseJson(text);
@@ -296,9 +409,19 @@ export class SiksDirectAuthClient {
         body: data,
       });
     }
+    this.debug('response SIKS auth API', {
+      name: logName || endpoint,
+      method,
+      status: response.status,
+      ok: response.ok,
+      elapsed_ms: Date.now() - startedAt,
+      message: authMessage(data),
+    });
 
     if (!response.ok) {
-      throw new Error(authMessage(data) || `SIKS auth API HTTP ${response.status}`);
+      const error = new Error(authMessage(data) || `SIKS auth API HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
     }
     return data;
   }
@@ -323,6 +446,17 @@ export class SiksDirectAuthClient {
     await fs.ensureDir(this.logDir);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     await fs.writeJson(path.join(this.logDir, `${stamp}-${name}.json`), sanitizeForLog(data), { spaces: 2 });
+  }
+
+  debug(message, meta = null, options = {}) {
+    if (!directVerboseEnabled(this.config)) {
+      return;
+    }
+    const shownMeta = options.sensitive && directRevealSensitiveValues(this.config)
+      ? meta
+      : sanitizeForLog(meta);
+    const suffix = shownMeta ? ` ${safeJson(shownMeta)}` : '';
+    console.log(`${new Date().toISOString()} [debug] [siks-direct] ${message}${suffix}`);
   }
 }
 
@@ -495,6 +629,48 @@ function isOtpRetryable(message) {
     || text.includes('expired')
     || text.includes('kedaluwarsa')
     || text.includes('token authorization tidak ditemukan');
+}
+
+function isTransientAuthError(error) {
+  const status = Number(error?.status || 0);
+  if (status === 408 || status === 409 || status === 425 || status === 429 || status >= 500) {
+    return true;
+  }
+  const message = String(error?.message || error || '').toLowerCase();
+  return [
+    'fetch failed',
+    'timeout',
+    'timed out',
+    'network',
+    'econnreset',
+    'etimedout',
+    'socket',
+    'temporarily unavailable',
+  ].some(token => message.includes(token));
+}
+
+function directVerboseEnabled(config = {}) {
+  return config.logLevel === 'verbose'
+    || truthy(process.env.SIKS_DIRECT_DEBUG_AUTH)
+    || truthy(process.env.SIKS_AUTH_DEBUG);
+}
+
+function directRevealSensitiveValues(config = {}) {
+  return config.logLevel === 'verbose'
+    || truthy(process.env.SIKS_DIRECT_VERBOSE_SECRETS)
+    || truthy(process.env.SIKS_AUTH_VERBOSE_SECRETS);
+}
+
+function truthy(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '';
+  }
 }
 
 function collectStrings(value, out = [], seen = new Set()) {

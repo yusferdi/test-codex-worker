@@ -101,6 +101,7 @@ export function readConfig() {
     siksAuthResendOtpEndpoint: process.env.SIKS_AUTH_RESEND_OTP_ENDPOINT || '/siks/auth/v1/resend-otp',
     siksAuthProfileEndpoint: process.env.SIKS_AUTH_PROFILE_ENDPOINT || '/siks/auth/v1/get-profile',
     siksAuthAppKey: process.env.SIKS_AUTH_APP_KEY || process.env.DTSEN_APP_KEY || 'base64:DuwlELKGgZKS0EO64/5ROG0UEy84IiebaIoNLAi0bFU=',
+    siksAuthTimeoutMs: numberEnv('SIKS_AUTH_TIMEOUT_MS', 30000),
     siksHttpLoginUsernameField: process.env.SIKS_HTTP_LOGIN_USERNAME_FIELD || 'email',
     siksDirectCaptchaText: process.env.SIKS_HTTP_LOGIN_CAPTCHA || process.env.SIKS_CAPTCHA_TEXT || '',
     siksDirectOtp: process.env.SIKS_HTTP_LOGIN_OTP || process.env.SIKS_OTP || '',

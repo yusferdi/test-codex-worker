@@ -36,6 +36,7 @@ async function main() {
 
 function addTimingChecks() {
   addCheck('API request timeout', Number(config.apiRequestTimeoutMs) >= 1000, `${config.apiRequestTimeoutMs} ms`);
+  addCheck('SIKS auth timeout', Number(config.siksAuthTimeoutMs) >= 1000, `${config.siksAuthTimeoutMs} ms`);
   addCheck('SIKS action timeout', Number(config.siksActionTimeoutMs) >= 1000, `${config.siksActionTimeoutMs} ms`);
   addCheck('SIKS search timeout', Number(config.siksSearchTimeoutMs) >= Number(config.siksActionTimeoutMs), `${config.siksSearchTimeoutMs} ms`);
   addCheck('Telegram OTP wait timeout', Number(config.telegramOtpWaitTimeoutMs) >= Number(config.siksActionTimeoutMs), `${config.telegramOtpWaitTimeoutMs} ms`);
