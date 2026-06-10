@@ -11,6 +11,8 @@
     "start:verbose": "node src/index.js --verbose",
     "doctor": "node src/doctor.js",
     "login:direct": "node login-direct/siks-client.js",
+    "login:direct:test": "node src/directAuthTest.js --auth-mode=direct --verbose",
+    "test:direct-login": "node src/directAuthTest.js --auth-mode=direct --verbose",
     "telegram:setup": "node login-direct/telegram-otp.js setup",
     "telegram:test": "node login-direct/telegram-otp.js test"
   },

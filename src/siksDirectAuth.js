@@ -167,7 +167,9 @@ export class SiksDirectAuthClient {
     const maxAttempts = Math.max(1, Number(this.config.siksOtpSubmitAttempts || 1));
     this.debug('mulai tahap OTP direct', { max_attempts: maxAttempts });
     let lastError = null;
+    let attemptsUsed = 0;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      attemptsUsed = attempt;
       const otp = await this.readOtp({ since: loginStartedAt, excludedOtps: attemptedOtps });
       if (!otp) {
         const error = new Error(`OTP baru tidak ditemukan dari Telegram setelah ${attemptedOtps.size} kode sebelumnya ditolak.`);
@@ -223,7 +225,7 @@ export class SiksDirectAuthClient {
       await sleep(Math.max(250, Number(this.config.siksOtpRetryDelayMs || 1000)));
     }
 
-    const error = new Error(`Login SIKS direct gagal setelah ${maxAttempts} percobaan OTP. ${lastError?.message || ''}`.trim());
+    const error = new Error(`Login SIKS direct gagal setelah ${attemptsUsed || maxAttempts}/${maxAttempts} percobaan OTP. ${lastError?.message || ''}`.trim());
     error.stage = 'otp';
     throw error;
   }
@@ -520,20 +522,10 @@ function unwrapAuthData(data) {
 }
 
 function extractAuthorization(data) {
-  const candidates = [
-    data?.authorization,
-    data?.Authorization,
-    data?.token,
-    data?.access_token,
-    data?.bearer_token,
-    data?.data?.token,
-    data?.data?.access_token,
-    data?.data?.data?.token,
-    data?.data?.data?.access_token,
-  ];
+  const candidates = collectAuthorizationCandidates(data);
   return candidates
     .map(value => String(value || '').trim())
-    .find(value => value.startsWith('Bearer ') || value.length > 40) || '';
+    .find(value => value.startsWith('Bearer ') || value.length >= 10) || '';
 }
 
 function isOtpRequired(data) {
@@ -547,6 +539,35 @@ function extractOtpStageToken(data) {
   }
   return extractAuthorization(data?.data)
     || String(data?.token || data?.access_token || data?.otp_token || data?.session_token || '').trim();
+}
+
+function collectAuthorizationCandidates(value, out = [], seen = new Set()) {
+  if (!value || seen.has(value)) {
+    return out;
+  }
+  if (typeof value !== 'object') {
+    return out;
+  }
+  seen.add(value);
+  for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (typeof item === 'string' && [
+      'authorization',
+      'auth',
+      'token',
+      'accesstoken',
+      'bearertoken',
+      'jwttoken',
+      'idtoken',
+    ].includes(normalizedKey)) {
+      out.push(item);
+      continue;
+    }
+    if (item && typeof item === 'object') {
+      collectAuthorizationCandidates(item, out, seen);
+    }
+  }
+  return out;
 }
 
 function findCaptchaImage(value) {

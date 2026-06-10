@@ -110,10 +110,18 @@ async function createTelegramClient({ rl, allowLogin = false } = {}) {
     throw new Error("Konfigurasi Telegram belum lengkap. Jalankan: npm run telegram:setup");
   }
 
-  const { TelegramClient } = await import("telegram");
+  const { TelegramClient, Logger } = await import("telegram");
   const { StringSession } = await import("telegram/sessions/index.js");
   const session = new StringSession(await readTelegramSession());
-  const client = new TelegramClient(session, apiId, apiHash, { connectionRetries: 5 });
+  const baseLogger = new Logger(process.env.TELEGRAM_LOG_LEVEL || "none");
+  const client = new TelegramClient(session, apiId, apiHash, {
+    connectionRetries: 5,
+    autoReconnect: false,
+    timeout: Number(process.env.TELEGRAM_CLIENT_TIMEOUT_SECONDS || 30),
+    baseLogger,
+  });
+  client.setLogLevel?.(process.env.TELEGRAM_LOG_LEVEL || "none");
+  client.onError = async () => {};
 
   await client.connect();
   if (!(await client.isUserAuthorized())) {
