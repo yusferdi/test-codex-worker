@@ -1,0 +1,8 @@
+.env
+.env.local
+.siks/
+node_modules/
+output/*
+!output/.gitkeep
+session-data/
+*.log

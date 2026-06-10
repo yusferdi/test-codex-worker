@@ -1,0 +1,22 @@
+{
+  "name": "nik-queue-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "start:clean": "node src/index.js --clean",
+    "start:verbose": "node src/index.js --verbose",
+    "doctor": "node src/doctor.js",
+    "login:direct": "node login-direct/siks-client.js",
+    "telegram:setup": "node login-direct/telegram-otp.js setup",
+    "telegram:test": "node login-direct/telegram-otp.js test"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.10",
+    "fs-extra": "^11.2.0",
+    "puppeteer-core": "^22.15.0",
+    "read-excel-file": "^9.0.9",
+    "telegram": "^2.26.22"
+  }
+}
