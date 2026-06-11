@@ -127,8 +127,17 @@ const HEAD_ONLY_HEADERS = [
   'ERROR',
 ];
 
-const ENRICHED_INPUT_HEADERS = [
+const ENRICHED_ACTION_HEADERS = [
+  'TINDAK LANJ',
   'PADAN DATA',
+  'BARIS INPUT',
+  'DUPLIKAT INPUT',
+  'RUJUKAN BARIS DUPLIKAT',
+  'SHEET INPUT',
+  'CATATAN PADAN DATA',
+];
+
+const ENRICHED_VALIDATION_HEADERS = [
   'DESIL BY PADAN DATA',
   'DOMISILI SAMA',
   'KK SAMA',
@@ -141,6 +150,9 @@ const ENRICHED_INPUT_HEADERS = [
   'KEPALA KELUARGA ADA',
   'STATUS AKTIF',
   'STATUS MENINGGAL',
+];
+
+const ENRICHED_PADAN_HEADERS = [
   'NIK KEPALA KELUARGA',
   'NAMA KEPALA KELUARGA',
   'NOMOR KK PADAN',
@@ -156,7 +168,6 @@ const ENRICHED_INPUT_HEADERS = [
   'JUMLAH ANGGOTA KELUARGA',
   'ANGGOTA KELUARGA PADAN',
   'HASIL CEK',
-  'CATATAN PADAN DATA',
 ];
 
 const REGION_INPUT_KEYS = {
@@ -330,8 +341,9 @@ export class ResultWriter {
       ...(enrichedInputRows.length > 1 ? [{
         name: 'INPUT + PADAN DATA',
         rows: enrichedInputRows,
-        sourceColumnCount: Math.max(0, enrichedInputRows[0].length - ENRICHED_INPUT_HEADERS.length),
-        freezeColumns: 1,
+        sourceStartColumn: ENRICHED_ACTION_HEADERS.length,
+        sourceColumnCount: Math.max(0, enrichedInputRows[0].length - ENRICHED_ACTION_HEADERS.length - ENRICHED_VALIDATION_HEADERS.length - ENRICHED_PADAN_HEADERS.length),
+        freezeColumns: 4,
         tabColor: '0F766E',
       }] : []),
       ...(padanSummaryRows.length > 1 ? [{ name: 'RINGKASAN PADAN', rows: padanSummaryRows, freezeColumns: 1, tabColor: '0369A1' }] : []),
@@ -496,11 +508,13 @@ export function buildEnrichedInputRows(inputRows, results, job = {}) {
   }
   const sourceHeaders = collectInputHeaders(inputRows);
   const resultBuckets = buildResultBuckets(results);
+  const duplicateReferences = buildInputDuplicateReferences(inputRows);
   return [
-    [...sourceHeaders, ...ENRICHED_INPUT_HEADERS],
+    [...ENRICHED_ACTION_HEADERS, ...sourceHeaders, ...ENRICHED_VALIDATION_HEADERS, ...ENRICHED_PADAN_HEADERS],
     ...inputRows.map((entry, index) => {
       const source = entry?.source && typeof entry.source === 'object' ? entry.source : {};
       const result = orderedResultForEntry(entry, results, index) || findResultForEntry(entry, resultBuckets);
+      const duplicate = duplicateReferences.get(index) || { status: 'TIDAK', references: '' };
       const domicileSame = result ? compareDomicile(entry, result, job) : '';
       const kkSame = result ? compareKk(entry, result) : '';
       const nikInFamily = result ? familyHasInputNik(entry, result) : '';
@@ -523,9 +537,18 @@ export function buildEnrichedInputRows(inputRows, results, job = {}) {
         activeStatus,
         deathStatus,
       }) : 'BELUM DIPROSES';
+      const notes = result
+        ? padanNotes(entry, result, { domicileSame, kkSame, nikInFamily, nameSame, nikByName, nikNameStatus, headExists })
+        : 'Belum ada hasil cek untuk NIK ini.';
       return [
-        ...sourceHeaders.map(header => source[header] ?? ''),
+        actionLabel(padan, duplicate.status),
         padan,
+        entry?.rowIndex || index + 2,
+        duplicate.status,
+        duplicate.references,
+        entry?.sheetName || source.sheet_name || '',
+        notes,
+        ...sourceHeaders.map(header => source[header] ?? ''),
         result ? displayDesil(result.desil) : '',
         domicileSame,
         kkSame,
@@ -553,7 +576,6 @@ export function buildEnrichedInputRows(inputRows, results, job = {}) {
         result?.jumlah_anggota_keluarga || '',
         result ? memberListForResult(result) : '',
         result?.status || '',
-        result ? padanNotes(entry, result, { domicileSame, kkSame, nikInFamily, nameSame, nikByName, nikNameStatus, headExists }) : 'Belum ada hasil cek untuk NIK ini.',
       ];
     }),
   ];
@@ -574,8 +596,9 @@ function buildPadanSummaryRows(enrichedRows, job = {}) {
     ...initialRows,
     ['Total input diproses', rows.length, 'Baris input yang memiliki NIK dan masuk proses worker.'],
     ['Padan data: YA', countEqual(rows, indexes.padan, 'YA'), 'NIK padan dan tidak ditandai perlu cek.'],
-    ['Padan data: PERLU CEK', countEqual(rows, indexes.padan, 'PERLU CEK'), 'Data ditemukan tetapi parsial, berubah, atau punya catatan penting.'],
+    ['Padan data: PERLU CEK', countEqual(rows, indexes.padan, 'PERLU CEK'), 'Data ditemukan tetapi parsial atau memiliki ketidaksesuaian penting.'],
     ['Padan data: TIDAK', countEqual(rows, indexes.padan, 'TIDAK'), 'NIK tidak ditemukan atau gagal dipadankan.'],
+    ['Baris input duplikat', countEqual(rows, indexes.duplicate, 'YA'), 'Setiap baris duplikat menunjuk ke pasangan baris inputnya.'],
     ['Domisili sama', countEqual(rows, indexes.domicile, 'YA'), 'Berdasarkan kolom wilayah input atau target wilayah job.'],
     ['Domisili berbeda', countEqual(rows, indexes.domicile, 'TIDAK'), 'Prioritas audit wilayah.'],
     ['Domisili tidak bisa dicek: data padan tidak ditemukan', countEqual(rows, indexes.domicile, NO_PADAN_DATA_LABEL), 'Tidak ada data padan untuk membandingkan domisili.'],
@@ -715,13 +738,17 @@ function buildReviewRows(enrichedRows) {
   const rows = enrichedRows.slice(1);
   const indexes = enrichedHeaderIndexes(header);
   const nikIndex = findHeaderIndex(header, ['nik input', 'nik', 'no nik', 'nomor nik']);
-  const sourceIndex = findHeaderIndex(header, ['sheet name', 'sheet_name', 'source sheet', 'source_sheet']);
+  const sourceIndex = findHeaderIndex(header, ['sheet input', 'sheet name', 'sheet_name', 'source sheet', 'source_sheet']);
   return [
     [
+      'TINDAK LANJ',
+      'BARIS INPUT',
       'NIK INPUT',
       'NAMA INPUT',
       'SOURCE SHEET',
       'PADAN DATA',
+      'DUPLIKAT INPUT',
+      'RUJUKAN BARIS DUPLIKAT',
       'DESIL BY PADAN DATA',
       'PERINGKAT NASIONAL PADAN',
       'PERINGKAT PROVINSI PADAN',
@@ -743,10 +770,14 @@ function buildReviewRows(enrichedRows) {
     ...rows
       .filter(row => isReviewNeeded(row, indexes))
       .map(row => [
+        cellAt(row, indexes.action),
+        cellAt(row, indexes.inputRow),
         cellAt(row, nikIndex),
         cellAt(row, indexes.inputName),
         cellAt(row, sourceIndex),
         cellAt(row, indexes.padan),
+        cellAt(row, indexes.duplicate),
+        cellAt(row, indexes.duplicateReferences),
         cellAt(row, indexes.desil),
         cellAt(row, indexes.rankNational),
         cellAt(row, indexes.rankProvince),
@@ -770,7 +801,11 @@ function buildReviewRows(enrichedRows) {
 
 function enrichedHeaderIndexes(header) {
   return {
+    action: header.indexOf('TINDAK LANJ'),
     padan: header.indexOf('PADAN DATA'),
+    duplicate: header.indexOf('DUPLIKAT INPUT'),
+    duplicateReferences: header.indexOf('RUJUKAN BARIS DUPLIKAT'),
+    inputRow: header.indexOf('BARIS INPUT'),
     desil: header.indexOf('DESIL BY PADAN DATA'),
     rankNational: header.indexOf('PERINGKAT NASIONAL PADAN'),
     rankProvince: header.indexOf('PERINGKAT PROVINSI PADAN'),
@@ -793,6 +828,7 @@ function enrichedHeaderIndexes(header) {
 }
 
 function isReviewNeeded(row, indexes) {
+  if (cellAt(row, indexes.duplicate) === 'YA') return true;
   if (cellAt(row, indexes.padan) !== 'YA') return true;
   if (cellAt(row, indexes.domicile) === 'TIDAK') return true;
   if (cellAt(row, indexes.kk) === 'TIDAK') return true;
@@ -801,8 +837,17 @@ function isReviewNeeded(row, indexes) {
   if (cellAt(row, indexes.headExists) === 'TIDAK') return true;
   if (cellAt(row, indexes.active) === 'TIDAK AKTIF') return true;
   if (deathIndicator(cellAt(row, indexes.death))) return true;
-  const notes = normalizeLooseKey(cellAt(row, indexes.notes));
-  return Boolean(notes && notes !== 'padan berdasarkan nik input');
+  return false;
+}
+
+function actionLabel(padan, duplicateStatus) {
+  if (duplicateStatus === 'YA') {
+    return padan === 'TIDAK' ? 'CEK DUPLIKAT & DATA TIDAK PADAN' : 'CEK DUPLIKAT INPUT';
+  }
+  if (padan === 'YA') return 'SELESAI';
+  if (padan === 'PERLU CEK') return 'PERLU CEK';
+  if (padan === 'TIDAK') return 'CEK DATA TIDAK PADAN';
+  return 'MENUNGGU PROSES';
 }
 
 function countEqual(rows, index, expected) {
@@ -835,7 +880,7 @@ function collectInputHeaders(inputRows) {
     const source = entry?.source && typeof entry.source === 'object' ? entry.source : {};
     for (const header of Object.keys(source)) {
       const normalized = normalizeTextKey(header);
-      if (!normalized || seen.has(normalized)) {
+      if (!normalized || normalized === 'sheet_name' || seen.has(normalized)) {
         continue;
       }
       seen.add(normalized);
@@ -843,6 +888,38 @@ function collectInputHeaders(inputRows) {
     }
   }
   return headers.length ? headers : ['NIK INPUT'];
+}
+
+function buildInputDuplicateReferences(inputRows) {
+  const groups = new Map();
+  for (const [index, entry] of (Array.isArray(inputRows) ? inputRows : []).entries()) {
+    const nik = onlyDigits(entry?.nik);
+    if (!nik) continue;
+    const group = groups.get(nik) || [];
+    group.push({ index, reference: inputRowReference(entry, index) });
+    groups.set(nik, group);
+  }
+
+  const references = new Map();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    for (const item of group) {
+      references.set(item.index, {
+        status: 'YA',
+        references: group
+          .filter(candidate => candidate.index !== item.index)
+          .map(candidate => candidate.reference)
+          .join('; '),
+      });
+    }
+  }
+  return references;
+}
+
+function inputRowReference(entry, index) {
+  const sheet = String(entry?.sheetName || entry?.source?.sheet_name || '').trim();
+  const row = Number(entry?.rowIndex || 0) || index + 2;
+  return `${sheet ? `${sheet}!` : ''}baris ${row}`;
 }
 
 function buildResultBuckets(results) {
@@ -924,7 +1001,6 @@ function padanLabel(result, checks = {}) {
     result?.error
     || status === 'FOUND_BY_KK'
     || status.startsWith('PARTIAL:')
-    || status.startsWith('CHANGED:')
     || checks.domicileSame === 'TIDAK'
     || checks.kkSame === 'TIDAK'
     || checks.nikInFamily === 'TIDAK'
@@ -1654,12 +1730,14 @@ function cellStyleId(rows, rowIndex, columnIndex, sheet) {
   const key = normalizeLooseKey(header);
   const value = String(rows[rowIndex]?.[columnIndex] ?? '').trim();
   if (rowIndex === 0) {
-    if (sheet.name === 'INPUT + PADAN DATA' && columnIndex < Number(sheet.sourceColumnCount || 0)) {
+    const sourceStart = Number(sheet.sourceStartColumn || 0);
+    const sourceEnd = sourceStart + Number(sheet.sourceColumnCount || 0);
+    if (sheet.name === 'INPUT + PADAN DATA' && columnIndex >= sourceStart && columnIndex < sourceEnd) {
       return 9;
     }
     return sheet.name === 'INPUT + PADAN DATA' ? 2 : 1;
   }
-  if (/\b(?:padan data|domisili sama|kk sama|nama sama|nik ada di anggota|status aktif|status meninggal|hasil cek|desil by padan data)\b/.test(key)) {
+  if (/\b(?:tindak lanjut|padan data|duplikat input|domisili sama|kk sama|nama sama|nik ada di anggota|status aktif|status meninggal|hasil cek|desil by padan data)\b/.test(key)) {
     return statusStyleId(value, key);
   }
   if (/\b(?:catatan|deskripsi|alamat|error)\b/.test(key)) {
@@ -1674,13 +1752,17 @@ function cellStyleId(rows, rowIndex, columnIndex, sheet) {
 function statusStyleId(value, key = '') {
   const text = normalizeTextKey(value).toUpperCase();
   if (!text) return 11;
+  if (key.includes('duplikat input')) {
+    if (text === 'YA') return 5;
+    if (text === 'TIDAK') return 3;
+  }
   if (key.includes('status meninggal')) {
     if (/^(?:0|FALSE|TIDAK|BELUM|N\/A|-)$/.test(text) || /\b(?:TIDAK|BELUM|BUKAN|NON)\b/.test(text)) return 3;
     return 4;
   }
   if (/\b(?:TIDAK|ERROR|NOT_REGISTERED|GAGAL|MENINGGAL)\b/.test(text)) return 4;
-  if (/\b(?:PERLU|BELUM|PARTIAL|FOUND_BY_KK|CHANGED|DIPROSES|N\/A)\b/.test(text)) return 5;
-  if (/\b(?:YA|AKTIF|NEW|FOUND|UNCHANGED|PADAN)\b/.test(text)) return 3;
+  if (/\b(?:CEK|DUPLIKAT|PERLU|BELUM|PARTIAL|FOUND_BY_KK|CHANGED|DIPROSES|N\/A)\b/.test(text)) return 5;
+  if (/\b(?:YA|AKTIF|NEW|FOUND|UNCHANGED|PADAN|SELESAI)\b/.test(text)) return 3;
   if (/^\d+(?:[.,]\d+)?$/.test(text)) return 6;
   return 6;
 }

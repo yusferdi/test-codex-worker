@@ -13,6 +13,7 @@
     "login:direct": "node login-direct/siks-client.js",
     "login:direct:test": "node src/directAuthTest.js --auth-mode=direct --verbose",
     "test:direct-login": "node src/directAuthTest.js --auth-mode=direct --verbose",
+    "test:result-writer": "node tests/resultWriterFixture.mjs",
     "telegram:setup": "node login-direct/telegram-otp.js setup",
     "telegram:test": "node login-direct/telegram-otp.js test"
   },
